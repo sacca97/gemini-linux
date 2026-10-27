@@ -1,0 +1,87 @@
+# Kernel config based on: arch/arm64/configs/defconfig
+# Contributor: Yassine Oudjana (Tooniis) <y.oudjana@protonmail.com>
+# Based on pmaports device/testing/linux-postmarketos-qcom-msm8996 (v26.06), plus
+# the series in patches/kernel/ of this repository.
+maintainer="Tommaso Sacchetti"
+_flavor="postmarketos-qcom-msm8996"
+pkgname=linux-$_flavor
+pkgver=6.19.5
+pkgrel=100
+pkgdesc="Kernel close to mainline with extra patches for Qualcomm MSM8996 devices"
+arch="aarch64"
+_carch="arm64"
+url="https://gitlab.com/msm8996-mainline/linux"
+license="GPL-2.0-only"
+options="!strip !check !tracedeps
+	pmb:cross-native
+	pmb:kconfigcheck-community
+"
+makedepends="
+	bison
+	clang
+	findutils
+	flex
+	installkernel
+	lld
+	llvm
+	openssl-dev
+	perl
+	python3
+	zstd
+"
+
+# Source
+_tag=v${pkgver//_/-}-msm8996
+source="
+	linux-$_tag.tar.gz::$url/-/archive/$_tag/linux-$_tag.tar.gz
+	config-$_flavor.$arch
+	0001-power-supply-qcom_fg-initialise-SRAM-state-before-re.patch
+	0002-backlight-qcom-wled-do-not-enable-the-OVP-IRQ-twice.patch
+	0003-arm64-dts-msm8996-add-the-APSS-watchdog.patch
+	0004-arm64-dts-msm8996-mark-the-CPU-power-collapse-state-.patch
+	0005-arm64-dts-msm8996-xiaomi-gemini-enable-the-USB-PHY-r.patch
+	0006-arm64-dts-msm8996-xiaomi-gemini-describe-the-two-wir.patch
+	0007-drm-panel-add-LG-Display-TD4322-command-mode-panel-d.patch
+	0008-arm64-dts-qcom-add-msm8996-xiaomi-gemini-lgd-for-LG-.patch
+	0009-power-supply-qcom-smbchg-add-charge_behaviour-inhibi.patch
+"
+builddir="$srcdir/linux-$_tag"
+
+prepare() {
+	default_prepare
+	cp "$srcdir/config-$_flavor.$CARCH" .config
+}
+
+build() {
+	unset LDFLAGS
+	make ARCH="$_carch" LLVM=1 \
+		KBUILD_BUILD_VERSION="$((pkgrel + 1 ))-$_flavor"
+}
+
+package() {
+	install -Dm644 "$builddir/arch/$_carch/boot/Image.gz" \
+		"$pkgdir/boot/vmlinuz"
+
+	install -D "$builddir/include/config/kernel.release" \
+		"$pkgdir/usr/share/kernel/$_flavor/kernel.release"
+
+	make modules_install dtbs_install \
+		ARCH="$_carch" \
+		LLVM=1 \
+		INSTALL_MOD_PATH="$pkgdir" \
+		INSTALL_MOD_STRIP=1 \
+		INSTALL_DTBS_PATH="$pkgdir"/boot/dtbs
+}
+sha512sums="
+dd30dd113ad9f0b4ab3771ea655de2becce7ddaf5066d2f860b7bb1eb78573137313191d9da740b152348f9f89894ace2bb94fb195e340f7b6dabedeebbc929f  linux-v6.19.5-msm8996.tar.gz
+689a6856a4a08de1adc405ffd804c647d8499eca068afc85737fe1b354dba9b845ce90acbe4666fcba780750470b361025b8edb62b9f07fac9aa6f3693151528  config-postmarketos-qcom-msm8996.aarch64
+4793afd0211aecf16a80852a04a833cafd859bf52ad5d3a75fc308b0e76d86777921ff2778a49931917995841c9cf4c40152ff7e79cc77a7b97bbe86cd141d67  0001-power-supply-qcom_fg-initialise-SRAM-state-before-re.patch
+1f9150a54b977c8c74669bcc02d1a23f0130c16c8565c3f847365fd329747dba115badf257eb1155e6cc3fc84ad1797e89d43bab1b6a5c37dd640271ed58587c  0002-backlight-qcom-wled-do-not-enable-the-OVP-IRQ-twice.patch
+ee81030f9608a0091b9831793607a594ee718322ba143a3147019df6dd5dc089d4411ecc5a478387c7936426ad820613ce01e5ec8d8498f947de1cb018f58c19  0003-arm64-dts-msm8996-add-the-APSS-watchdog.patch
+2e2981b03fe26803a6c2bad05ac1a5e604e98fa8eb36404dbd1f3a30def63a094cb1bba961b9e55413a4de541fc30e02a6fe9dc2fa6ac9353dd96cd962e41323  0004-arm64-dts-msm8996-mark-the-CPU-power-collapse-state-.patch
+ecacf84d958506f73b52011511072e8be7846317a51486aae1729fbc6fbe371f3c94ab28e810981e71c7bd733b27b36e8719211bad95bfc4c9035ed5e7ec8734  0005-arm64-dts-msm8996-xiaomi-gemini-enable-the-USB-PHY-r.patch
+e523be2d07a72a7cf5b2f89890e0d908b20543b82c88c34ef04ebafb9c07f6f70e46e4f5f6d982f94dbdd5d00f1d24b5585bfcf6334392bc2e4fbf1258b60d78  0006-arm64-dts-msm8996-xiaomi-gemini-describe-the-two-wir.patch
+b2b92567c17036246f6a9333b24534a1bc8ec00fd9677b089c2a357bd7f19d6e5e1d0a1bacd9eb6bd78acba2b073e61700d69aac423f64ef87c9afdf9926596a  0007-drm-panel-add-LG-Display-TD4322-command-mode-panel-d.patch
+86aff6b2655458614aff417cbd828f33dc126c3b9ce59fda5f27f30b80fe688e06685eb4f5e62e3b609fa4d990f3bafda872db689f1740527dbdd49422be54f8  0008-arm64-dts-qcom-add-msm8996-xiaomi-gemini-lgd-for-LG-.patch
+e367433b091e46c3866bc303e553178b3d916b31f9d10cec7f4aa2b5c27191009c71be7b262a98389378c248657bfe8e4db43c1f291e1ace45e0434489428149  0009-power-supply-qcom-smbchg-add-charge_behaviour-inhibi.patch
+"

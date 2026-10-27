@@ -1,0 +1,36 @@
+From 837bde93c493fe6dac0ea2ec9b94bed2253fbefb Mon Sep 17 00:00:00 2001
+From: Tommaso Sacchetti <noreply@example.invalid>
+Date: Tue, 27 Oct 2026 15:36:13 +0100
+Subject: [PATCH] arm64: dts: msm8996: add the APSS watchdog
+
+The CPU subsystem watchdog was not described, so no /dev/watchdog existed
+on MSM8996 and an unattended device could not recover from a hang by
+itself. Add the qcom,kpss-wdt node (0x9830000, sleep clock) with a 30 s
+timeout, as done for other MSM SoCs.
+
+Tested on a Xiaomi Mi 5: the device registers and is kept alive by a
+userspace watchdog daemon.
+
+Signed-off-by: Tommaso Sacchetti
+---
+ arch/arm64/boot/dts/qcom/msm8996.dtsi | 7 +++++++
+ 1 file changed, 7 insertions(+)
+
+diff --git a/arch/arm64/boot/dts/qcom/msm8996.dtsi b/arch/arm64/boot/dts/qcom/msm8996.dtsi
+index dc9e9e4..abdaa41 100644
+--- a/arch/arm64/boot/dts/qcom/msm8996.dtsi
++++ b/arch/arm64/boot/dts/qcom/msm8996.dtsi
+@@ -3697,6 +3697,13 @@
+ 			#clock-cells = <0>;
+ 		};
+ 
++		watchdog@9830000 {
++			compatible = "qcom,kpss-wdt";
++			reg = <0x09830000 0x1000>;
++			clocks = <&sleep_clk>;
++			timeout-sec = <30>;
++		};
++
+ 		timer@9840000 {
+ 			#address-cells = <1>;
+ 			#size-cells = <1>;

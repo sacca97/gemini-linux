@@ -1,0 +1,3 @@
+# Highest frequency (kHz) for the big cluster (cpu2-3). Empty means no cap.
+# Available: ... 1478400 1555200 1632000 1708800 1785600 1824000 1920000 1996800 2073600 2150400
+BIG_MAX=1555200

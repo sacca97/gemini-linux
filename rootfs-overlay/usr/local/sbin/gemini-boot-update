@@ -1,0 +1,74 @@
+#!/bin/sh
+# Write /boot/boot.img (built by the kernel package's initramfs trigger) to the
+# Android "boot" partition, which is what the bootloader actually loads.
+#
+#   gemini-boot-update            show what would change (default, writes nothing)
+#   gemini-boot-update --yes      back up the current partition, write, verify
+#   gemini-boot-update --restore FILE --yes   write a saved image back
+#
+# Only the boot partition is ever written. A full backup is kept in
+# /var/lib/boot-backup/ first, and the written data is read back and compared.
+set -eu
+
+PART=/dev/disk/by-partlabel/boot
+IMG=/boot/boot.img
+BACKUP_DIR=/var/lib/boot-backup
+YES=0
+RESTORE=""
+
+while [ $# -gt 0 ]; do
+	case "$1" in
+	--yes) YES=1 ;;
+	--restore) shift; RESTORE="$1" ;;
+	*) echo "usage: gemini-boot-update [--yes] [--restore FILE]" >&2; exit 2 ;;
+	esac
+	shift
+done
+
+[ "$(id -u)" = 0 ] || { echo "run as root (sudo)" >&2; exit 1; }
+[ -n "$RESTORE" ] && IMG="$RESTORE"
+[ -r "$IMG" ] || { echo "no image: $IMG" >&2; exit 1; }
+[ -b "$PART" ] || { echo "no boot partition: $PART" >&2; exit 1; }
+
+real=$(readlink -f "$PART")
+label=$(basename "$(readlink "$PART")")
+size=$(stat -c %s "$IMG")
+partsize=$(( $(cat /sys/class/block/$label/size) * 512 ))
+
+[ "$(head -c 8 "$IMG")" = "ANDROID!" ] || { echo "$IMG is not an Android boot image" >&2; exit 1; }
+[ "$size" -le "$partsize" ] || { echo "$IMG ($size) does not fit the partition ($partsize)" >&2; exit 1; }
+
+new=$(sha256sum "$IMG" | cut -d' ' -f1)
+cur=$(head -c "$size" "$PART" | sha256sum | cut -d' ' -f1)
+echo "partition: $PART -> $real ($partsize bytes)"
+echo "image:     $IMG ($size bytes)"
+echo "image sha256:               $new"
+echo "partition (same length):    $cur"
+
+if [ "$new" = "$cur" ]; then
+	echo "The boot partition already holds this image."
+	exit 0
+fi
+if [ "$YES" != 1 ]; then
+	echo "Dry run: nothing written. Re-run with --yes to back up and write."
+	exit 0
+fi
+
+mkdir -p "$BACKUP_DIR"
+backup="$BACKUP_DIR/boot-$(date +%Y%m%d-%H%M%S)-$(echo "$cur" | cut -c1-8).img"
+dd if="$PART" of="$backup" bs=1M 2>/dev/null
+sync
+echo "backup written: $backup ($(stat -c %s "$backup") bytes)"
+
+dd if="$IMG" of="$PART" bs=1M conv=fsync 2>/dev/null
+sync
+after=$(head -c "$size" "$PART" | sha256sum | cut -d' ' -f1)
+if [ "$after" = "$new" ]; then
+	echo "verified: the partition now holds $new"
+	echo "Reboot to use it. To roll back: gemini-boot-update --restore $backup --yes"
+else
+	echo "VERIFY FAILED, restoring the backup" >&2
+	dd if="$backup" of="$PART" bs=1M conv=fsync 2>/dev/null
+	sync
+	exit 1
+fi

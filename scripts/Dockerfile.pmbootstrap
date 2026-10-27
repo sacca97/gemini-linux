@@ -1,0 +1,73 @@
+# Reproducible pmbootstrap build environment for linux-gemini.
+#
+# pmbootstrap needs root for chroots and loop mounts. This image runs it as a
+# non-root "builder" user with passwordless sudo inside an explicitly
+# privileged container, so the Fedora host's sudo configuration is untouched.
+#
+# Build from the repository root:
+#   docker build -f scripts/Dockerfile.pmbootstrap -t linux-gemini-pmb:3.12.1 .
+
+FROM fedora:44
+
+ARG PMBOOTSTRAP_COMMIT=ff954a63c7a5ead5045150f5a79f035259512df2
+ARG USER_UID=1000
+ARG USER_GID=1000
+
+RUN dnf install -y \
+        android-tools \
+        bc \
+        bison \
+        clang \
+        cpio \
+        diffutils \
+        dosfstools \
+        dtc \
+        e2fsprogs \
+        elfutils-libelf-devel \
+        file \
+        findutils \
+        flex \
+        gcc \
+        gcc-c++ \
+        git \
+        gzip \
+        lld \
+        llvm \
+        make \
+        mtools \
+        kpartx \
+        ncurses-devel \
+        openssl \
+        openssl-devel \
+        patch \
+        perl \
+        procps-ng \
+        python3 \
+        python3-pip \
+        qemu-user-static \
+        rsync \
+        sudo \
+        tar \
+        util-linux \
+        which \
+        xz \
+        zstd \
+    && dnf clean all
+
+# Pin pmbootstrap to the audited commit instead of whatever main is later.
+RUN git init /opt/pmbootstrap \
+    && cd /opt/pmbootstrap \
+    && git remote add origin https://gitlab.postmarketos.org/postMarketOS/pmbootstrap.git \
+    && git fetch --depth 1 origin "${PMBOOTSTRAP_COMMIT}" \
+    && git checkout --detach FETCH_HEAD \
+    && git rev-parse HEAD
+
+# Match the host developer's UID/GID so bind-mounted files stay user-owned.
+RUN groupadd -g "${USER_GID}" builder \
+    && useradd -m -u "${USER_UID}" -g "${USER_GID}" -G wheel builder \
+    && printf 'builder ALL=(ALL) NOPASSWD:ALL\n' > /etc/sudoers.d/builder \
+    && chmod 0440 /etc/sudoers.d/builder
+
+USER builder
+ENV HOME=/home/builder
+WORKDIR /work

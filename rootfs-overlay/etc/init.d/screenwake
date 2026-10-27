@@ -1,0 +1,20 @@
+#!/sbin/openrc-run
+
+description="Wake the console on a hardware button press and set the blank timeout"
+command=/usr/bin/python3
+command_args="/usr/local/bin/screenwake.py"
+command_background=true
+pidfile=/run/screenwake.pid
+
+depend() {
+	need localmount
+}
+
+start_pre() {
+	# consoleblank is read-only at runtime; use the console escape (minutes)
+	printf '\033[9;1]' > /dev/tty0
+	# The incell touch controller dies whenever the panel powers down and then
+	# storms the console with I2C errors, which blocks unblanking. Unused on a
+	# headless server; the DTS patch disables it for good.
+	echo 2-0020 > /sys/bus/i2c/drivers/rmi4_i2c/unbind 2>/dev/null || true
+}

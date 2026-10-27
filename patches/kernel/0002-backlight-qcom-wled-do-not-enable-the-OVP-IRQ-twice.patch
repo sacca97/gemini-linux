@@ -1,0 +1,73 @@
+From 6177841adb03a0b93e9f69e3615611ad01747249 Mon Sep 17 00:00:00 2001
+From: Tommaso Sacchetti <noreply@example.invalid>
+Date: Tue, 27 Oct 2026 15:36:13 +0100
+Subject: [PATCH] backlight: qcom-wled: do not enable the OVP IRQ twice
+
+wled_module_enable() is called on every brightness update while the
+module is already on. Each call schedules the deferred enable_irq() of
+the OVP interrupt again, so the work runs repeatedly and enable_irq() is
+called on an interrupt that is already enabled, which warns and unbalances
+the enable depth.
+
+Track whether the IRQ is enabled and only enable or disable it on a real
+transition.
+
+Signed-off-by: Tommaso Sacchetti
+---
+ drivers/video/backlight/qcom-wled.c | 19 +++++++++++++++----
+ 1 file changed, 15 insertions(+), 4 deletions(-)
+
+diff --git a/drivers/video/backlight/qcom-wled.c b/drivers/video/backlight/qcom-wled.c
+index 8054e47..a352b27 100644
+--- a/drivers/video/backlight/qcom-wled.c
++++ b/drivers/video/backlight/qcom-wled.c
+@@ -199,6 +199,7 @@ struct wled {
+ 	bool cabc_disabled;
+ 	int short_irq;
+ 	int ovp_irq;
++	bool ovp_irq_enabled;
+ 
+ 	struct wled_config cfg;
+ 	struct delayed_work ovp_work;
+@@ -294,7 +295,10 @@ static void wled_ovp_work(struct work_struct *work)
+ {
+ 	struct wled *wled = container_of(work,
+ 					 struct wled, ovp_work.work);
+-	enable_irq(wled->ovp_irq);
++	if (!wled->ovp_irq_enabled) {
++		wled->ovp_irq_enabled = true;
++		enable_irq(wled->ovp_irq);
++	}
+ }
+ 
+ static int wled_module_enable(struct wled *wled, int val)
+@@ -317,12 +321,17 @@ static int wled_module_enable(struct wled *wled, int val)
+ 			 * The hardware generates a storm of spurious OVP
+ 			 * interrupts during soft start operations. So defer
+ 			 * enabling the IRQ for 10ms to ensure that the
+-			 * soft start is complete.
++			 * soft start is complete. Brightness updates call this
++			 * repeatedly, so do nothing if the IRQ is already on.
+ 			 */
+-			schedule_delayed_work(&wled->ovp_work, HZ / 100);
++			if (!wled->ovp_irq_enabled)
++				schedule_delayed_work(&wled->ovp_work, HZ / 100);
+ 		} else {
+-			if (!cancel_delayed_work_sync(&wled->ovp_work))
++			cancel_delayed_work_sync(&wled->ovp_work);
++			if (wled->ovp_irq_enabled) {
++				wled->ovp_irq_enabled = false;
+ 				disable_irq(wled->ovp_irq);
++			}
+ 		}
+ 	}
+ 
+@@ -1653,6 +1662,8 @@ static int wled_configure_ovp_irq(struct wled *wled,
+ 	/* Keep OVP irq disabled until module is enabled */
+ 	if (!(val & WLED3_CTRL_REG_MOD_EN_MASK))
+ 		disable_irq(wled->ovp_irq);
++	else
++		wled->ovp_irq_enabled = true;
+ 
+ 	return 0;
+ }

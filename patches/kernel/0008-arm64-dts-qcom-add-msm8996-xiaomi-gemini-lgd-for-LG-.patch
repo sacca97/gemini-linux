@@ -1,0 +1,76 @@
+From 76790aeb07650cfb614951410d04cbe78fa72f25 Mon Sep 17 00:00:00 2001
+From: Tommaso Sacchetti <noreply@example.invalid>
+Date: Tue, 27 Oct 2026 15:37:11 +0100
+Subject: [PATCH] arm64: dts: qcom: add msm8996-xiaomi-gemini-lgd for LG
+ Display panel units
+
+Some Xiaomi Mi 5 units ship with an LG Display TD4322 DSI panel instead
+of the JDI R63452 in the base board file. The two panels need different
+drivers and the DSI peripheral is created from a single node, so they
+cannot be selected with a compatible fallback list (the JDI driver would
+bind to the LGD panel and drive it with the wrong sequence).
+
+Add a board file that includes the base one, switches the panel node to
+lgd,td4322 and disables the Synaptics touch controller, which is part of
+the LGD display IC and floods the I2C bus with interrupts and errors
+whenever the panel is powered down. The base file stays untouched for JDI
+units.
+
+Signed-off-by: Tommaso Sacchetti
+---
+ arch/arm64/boot/dts/qcom/Makefile             |  1 +
+ .../dts/qcom/msm8996-xiaomi-gemini-lgd.dts    | 33 +++++++++++++++++++
+ 2 files changed, 34 insertions(+)
+ create mode 100644 arch/arm64/boot/dts/qcom/msm8996-xiaomi-gemini-lgd.dts
+
+diff --git a/arch/arm64/boot/dts/qcom/Makefile b/arch/arm64/boot/dts/qcom/Makefile
+index 821146b..b5b2488 100644
+--- a/arch/arm64/boot/dts/qcom/Makefile
++++ b/arch/arm64/boot/dts/qcom/Makefile
+@@ -109,6 +109,7 @@ dtb-$(CONFIG_ARCH_QCOM)	+= msm8996-sony-xperia-tone-dora.dtb
+ dtb-$(CONFIG_ARCH_QCOM)	+= msm8996-sony-xperia-tone-kagura.dtb
+ dtb-$(CONFIG_ARCH_QCOM)	+= msm8996-sony-xperia-tone-keyaki.dtb
+ dtb-$(CONFIG_ARCH_QCOM)	+= msm8996-xiaomi-gemini.dtb
++dtb-$(CONFIG_ARCH_QCOM)	+= msm8996-xiaomi-gemini-lgd.dtb
+ dtb-$(CONFIG_ARCH_QCOM)	+= msm8996-zte-axon7.dtb
+ dtb-$(CONFIG_ARCH_QCOM)	+= msm8996pro-oneplus3t-s6e3fa3.dtb
+ dtb-$(CONFIG_ARCH_QCOM)	+= msm8996pro-oneplus3t-s6e3fa5.dtb
+diff --git a/arch/arm64/boot/dts/qcom/msm8996-xiaomi-gemini-lgd.dts b/arch/arm64/boot/dts/qcom/msm8996-xiaomi-gemini-lgd.dts
+new file mode 100644
+index 0000000..23b01fe
+--- /dev/null
++++ b/arch/arm64/boot/dts/qcom/msm8996-xiaomi-gemini-lgd.dts
+@@ -0,0 +1,33 @@
++// SPDX-License-Identifier: GPL-2.0-only
++/*
++ * Xiaomi Mi 5 units with an LG Display TD4322 panel instead of the JDI
++ * R63452 described by the base board file.
++ */
++
++#include "msm8996-xiaomi-gemini.dts"
++
++/ {
++	model = "Xiaomi Mi 5 (LG Display panel)";
++};
++
++&panel {
++	/*
++	 * The JDI and LGD panels have incompatible init sequences and the DSI
++	 * peripheral is instantiated from this single node, so a compatible
++	 * fallback list would let the JDI driver bind to the LGD panel. Use a
++	 * separate board file for these units.
++	 */
++	compatible = "lgd,td4322";
++};
++
++&blsp2_i2c6 {
++	synaptics@20 {
++		/*
++		 * On LGD TD4322 units the touch controller is part of the display
++		 * IC and stops answering on I2C whenever the panel is powered down.
++		 * Its level interrupt then storms (16k/s) and the error messages
++		 * block the console.
++		 */
++		status = "disabled";
++	};
++};

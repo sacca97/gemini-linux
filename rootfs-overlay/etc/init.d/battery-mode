@@ -1,0 +1,6 @@
+#!/sbin/openrc-run
+description="Charge inhibit / limit controller"
+command=/usr/local/bin/battery-mode.sh
+command_background=true
+pidfile=/run/battery-mode.pid
+depend() { after localmount; }

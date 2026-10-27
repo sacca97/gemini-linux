@@ -1,0 +1,12 @@
+#!/sbin/openrc-run
+
+description="Feed the SoC watchdog so a hung system resets itself"
+command=/sbin/watchdog
+# 30 s hardware timeout (the maximum is 32 s), fed every 10 s
+command_args="-F -T 30 -t 10 /dev/watchdog0"
+command_background=true
+pidfile=/run/watchdogd.pid
+
+depend() {
+	need localmount
+}

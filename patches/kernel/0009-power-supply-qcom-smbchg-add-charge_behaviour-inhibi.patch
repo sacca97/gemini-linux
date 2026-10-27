@@ -1,0 +1,125 @@
+From e689d00f6901b56dcd0cc6482bfd46828d25f512 Mon Sep 17 00:00:00 2001
+From: Tommaso Sacchetti <noreply@example.invalid>
+Date: Tue, 27 Oct 2026 15:37:11 +0100
+Subject: [PATCH] power: supply: qcom-smbchg: add charge_behaviour
+ inhibit-charge
+
+Expose the standard charge_behaviour property on the USB supply so
+userspace can stop battery charging while the USB input keeps powering
+the system, for devices that are always plugged in. Only "auto" and
+"inhibit-charge" are supported; the default is "auto".
+
+The request clears CHG_EN_BIT in BAT_IF_CMD_CHG through the existing
+smbchg_charging_enable() helper, is re-applied on USB source detection so
+a cable replug does not silently resume charging, and is reported as
+"Not charging". JEITA, termination and the thermal shutdown handling are
+not touched.
+
+Tested on a Xiaomi Mi 5 on a 500 mA SDP port: inhibit holds the battery
+level at idle; under a 4-core load the battery supplies the part of the
+load above the input limit; "auto" resumes charging.
+
+Signed-off-by: Tommaso Sacchetti
+---
+ drivers/power/supply/qcom-smbchg.c | 33 +++++++++++++++++++++++++++++-
+ drivers/power/supply/qcom-smbchg.h |  1 +
+ 2 files changed, 33 insertions(+), 1 deletion(-)
+
+diff --git a/drivers/power/supply/qcom-smbchg.c b/drivers/power/supply/qcom-smbchg.c
+index 6ea17bc..dfa8f22 100644
+--- a/drivers/power/supply/qcom-smbchg.c
++++ b/drivers/power/supply/qcom-smbchg.c
+@@ -940,6 +940,10 @@ static irqreturn_t smbchg_handle_usb_source_detect(int irq, void *data)
+ 	usb_present = smbchg_usb_is_present(chip);
+ 	dev_dbg(chip->dev, "USB %spresent\n", usb_present ? "" : "not ");
+ 
++	/* Keep honouring an inhibit request across cable replugs */
++	if (usb_present && chip->charge_inhibit)
++		smbchg_charging_enable(chip, false);
++
+ 	usb_type = smbchg_usb_get_type(chip);
+ 
+ 	/*
+@@ -1208,6 +1212,10 @@ static int smbchg_get_status(struct smbchg_chip *chip)
+ 	}
+ 	dev_vdbg(chip->dev, "Charger real-time status: 0x%x", value);
+ 
++	/* Charging was inhibited from userspace, input only powers the system */
++	if (chip->charge_inhibit)
++		return POWER_SUPPLY_STATUS_NOT_CHARGING;
++
+ 	/* Check if temination current is reached or if charging is inhibited */
+ 	if (value & BAT_TCC_REACHED_BIT || value & CHG_INHIBIT_BIT)
+ 		return POWER_SUPPLY_STATUS_FULL;
+@@ -1280,6 +1288,11 @@ static int smbchg_get_property(struct power_supply *psy,
+ 			return ret;
+ 		val->intval = ret;
+ 		break;
++	case POWER_SUPPLY_PROP_CHARGE_BEHAVIOUR:
++		val->intval = chip->charge_inhibit ?
++			POWER_SUPPLY_CHARGE_BEHAVIOUR_INHIBIT_CHARGE :
++			POWER_SUPPLY_CHARGE_BEHAVIOUR_AUTO;
++		break;
+ 	default:
+ 		dev_err(chip->dev, "Invalid property: %d\n", psp);
+ 		return -EINVAL;
+@@ -1315,6 +1328,20 @@ static int smbchg_set_property(struct power_supply *psy,
+ 		if (ret > 0)
+ 			ret = 0;
+ 		break;
++	case POWER_SUPPLY_PROP_CHARGE_BEHAVIOUR:
++		switch (val->intval) {
++		case POWER_SUPPLY_CHARGE_BEHAVIOUR_AUTO:
++		case POWER_SUPPLY_CHARGE_BEHAVIOUR_INHIBIT_CHARGE:
++			break;
++		default:
++			return -EINVAL;
++		}
++		ret = smbchg_charging_enable(chip,
++			val->intval == POWER_SUPPLY_CHARGE_BEHAVIOUR_AUTO);
++		if (!ret)
++			chip->charge_inhibit = val->intval !=
++				POWER_SUPPLY_CHARGE_BEHAVIOUR_AUTO;
++		break;
+ 	default:
+ 		dev_err(chip->dev, "Invalid property: %d\n", psp);
+ 		return -EINVAL;
+@@ -1330,6 +1357,7 @@ static int smbchg_property_is_writeable(struct power_supply *psy,
+ 	case POWER_SUPPLY_PROP_ONLINE:
+ 	case POWER_SUPPLY_PROP_CONSTANT_CHARGE_CURRENT:
+ 	case POWER_SUPPLY_PROP_INPUT_CURRENT_LIMIT:
++	case POWER_SUPPLY_PROP_CHARGE_BEHAVIOUR:
+ 		return true;
+ 	default:
+ 		return false;
+@@ -1348,7 +1376,8 @@ static enum power_supply_property smbchg_props[] = {
+ 	POWER_SUPPLY_PROP_CONSTANT_CHARGE_CURRENT_MAX,
+ 	POWER_SUPPLY_PROP_INPUT_CURRENT_LIMIT,
+ 	POWER_SUPPLY_PROP_USB_TYPE,
+-	POWER_SUPPLY_PROP_CHARGE_TERM_CURRENT
++	POWER_SUPPLY_PROP_CHARGE_TERM_CURRENT,
++	POWER_SUPPLY_PROP_CHARGE_BEHAVIOUR
+ };
+ 
+ static const struct power_supply_desc smbchg_usb_psy_desc = {
+@@ -1358,6 +1387,8 @@ static const struct power_supply_desc smbchg_usb_psy_desc = {
+ 		     BIT(POWER_SUPPLY_USB_TYPE_SDP) |
+ 		     BIT(POWER_SUPPLY_USB_TYPE_DCP) |
+ 		     BIT(POWER_SUPPLY_USB_TYPE_CDP),
++	.charge_behaviours = BIT(POWER_SUPPLY_CHARGE_BEHAVIOUR_AUTO) |
++			     BIT(POWER_SUPPLY_CHARGE_BEHAVIOUR_INHIBIT_CHARGE),
+ 	.properties = smbchg_props,
+ 	.num_properties = ARRAY_SIZE(smbchg_props),
+ 	.get_property = smbchg_get_property,
+diff --git a/drivers/power/supply/qcom-smbchg.h b/drivers/power/supply/qcom-smbchg.h
+index 06445e1..2b00907 100644
+--- a/drivers/power/supply/qcom-smbchg.h
++++ b/drivers/power/supply/qcom-smbchg.h
+@@ -244,6 +244,7 @@ struct smbchg_chip {
+ 	struct regulator_desc otg_rdesc;
+ 	struct regulator_dev *otg_reg;
+ 	int otg_resets;
++	bool charge_inhibit;
+ 
+ 	struct extcon_dev *edev;
+ 

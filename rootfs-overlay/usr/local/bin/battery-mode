@@ -1,0 +1,23 @@
+#!/bin/sh
+# battery-mode [status | auto | bypass | limit [LOW HIGH]]   (set needs root)
+CONF=/etc/conf.d/battery-mode
+USB=/sys/class/power_supply/qcom-smbchg-usb
+BAT=/sys/class/power_supply/qcom-battery
+setkey() { sed -i "s/^$1=.*/$1=$2/" $CONF; }
+case "$1" in
+auto|bypass|limit)
+	[ "$(id -u)" = 0 ] || { echo "run as root (sudo)" >&2; exit 1; }
+	setkey MODE "$1"
+	if [ "$1" = limit ] && [ -n "$2" ] && [ -n "$3" ]; then setkey LIMIT_LOW "$2"; setkey LIMIT_HIGH "$3"; fi
+	rc-service battery-mode restart >/dev/null 2>&1
+	sleep 2 ;;
+status|"") ;;
+*) echo "usage: battery-mode [status|auto|bypass|limit [LOW HIGH]]" >&2; exit 1 ;;
+esac
+. $CONF
+echo "mode:        $MODE (limit $LIMIT_LOW-$LIMIT_HIGH, bypass floor $FLOOR)"
+echo "behaviour:   $(cat $USB/charge_behaviour)"
+echo "usb online:  $(cat $USB/online)  ($(cat $USB/usb_type))"
+echo "status:      $(cat $USB/status) / battery $(cat $BAT/status)"
+echo "capacity:    $(cat $BAT/capacity)%  temp $(( $(cat $BAT/temp) / 10 )).$(( $(cat $BAT/temp) % 10 )) C"
+echo "battery I:   $(( $(cat $BAT/current_now) / 1000 )) mA  V: $(( $(cat $BAT/voltage_now) / 1000 )) mV"

@@ -1,0 +1,6 @@
+#!/sbin/openrc-run
+description="Reboot if the Wi-Fi chip is missing from PCIe after boot"
+command=/usr/local/bin/wifi-guard.sh
+command_background=true
+pidfile=/run/wifi-guard.pid
+depend() { after localmount; }

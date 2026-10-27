@@ -1,0 +1,16 @@
+#!/sbin/openrc-run
+description="Keep the clock from going back to 1970 before chrony steps it"
+STAMP=/var/lib/savetime
+start() {
+	[ -r $STAMP ] || return 0
+	saved=$(cat $STAMP)
+	now=$(date +%s)
+	[ "$saved" -gt "$now" ] && date -s "@$saved" >/dev/null
+	return 0
+}
+stop() {
+	mkdir -p /var/lib
+	date +%s > $STAMP
+	sync
+}
+depend() { before chronyd; after localmount; }

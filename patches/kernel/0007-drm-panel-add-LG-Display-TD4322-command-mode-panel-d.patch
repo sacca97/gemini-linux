@@ -1,0 +1,370 @@
+From b3debd0b1baa8e5d094db872a46fbd2867fdf2b8 Mon Sep 17 00:00:00 2001
+From: Tommaso Sacchetti <noreply@example.invalid>
+Date: Tue, 27 Oct 2026 15:36:38 +0100
+Subject: [PATCH] drm/panel: add LG Display TD4322 command-mode panel driver
+
+Some Xiaomi Mi 5 (gemini) units ship with an LG Display TD4322 1080x1920
+DSI command-mode panel instead of the JDI R63452 the board is described
+with. The two panels have different init sequences, so the JDI driver
+cannot drive it (the bootloader even reports it as
+qcom,mdss_dsi_lgd_fhd_td4322_cmd).
+
+Add a driver for it. The init and off sequences and the mode were
+translated from the downstream (LineageOS, kernel 4.4) device tree node.
+Tested on a Xiaomi Mi 5 with this panel: the display comes up, blanks
+and wakes.
+
+Signed-off-by: Tommaso Sacchetti
+---
+ drivers/gpu/drm/panel/Kconfig            |  14 ++
+ drivers/gpu/drm/panel/Makefile           |   1 +
+ drivers/gpu/drm/panel/panel-lgd-td4322.c | 303 +++++++++++++++++++++++
+ 3 files changed, 318 insertions(+)
+ create mode 100644 drivers/gpu/drm/panel/panel-lgd-td4322.c
+
+diff --git a/drivers/gpu/drm/panel/Kconfig b/drivers/gpu/drm/panel/Kconfig
+index eeefeea..390f84b 100644
+--- a/drivers/gpu/drm/panel/Kconfig
++++ b/drivers/gpu/drm/panel/Kconfig
+@@ -389,6 +389,20 @@ config DRM_PANEL_LEADTEK_LTK500HD1829
+ 	  24 bit RGB per pixel. It provides a MIPI DSI interface to
+ 	  the host and has a built-in LED backlight.
+ 
++config DRM_PANEL_LGD_TD4322
++	tristate "LG Display TD4322 Full HD DSI panel"
++	depends on OF
++	depends on DRM_MIPI_DSI
++	depends on BACKLIGHT_CLASS_DEVICE
++	help
++	  Say Y here if you want to enable support for the LG Display TD4322
++	  (LGD FHD incell) DSI command mode panel as found in some Xiaomi
++	  Mi 5 (gemini) devices.  The panel has a 1080x1920 pixel resolution
++	  and uses 24 bit RGB per pixel.
++
++	  To compile this driver as a module, choose M here: the module will
++	  be called panel-lgd-td4322.
++
+ config DRM_PANEL_LINCOLNTECH_LCD197
+ 	tristate "Lincoln Technologies lcd197 panel"
+ 	help
+diff --git a/drivers/gpu/drm/panel/Makefile b/drivers/gpu/drm/panel/Makefile
+index 53ef7e4..e632ecd 100644
+--- a/drivers/gpu/drm/panel/Makefile
++++ b/drivers/gpu/drm/panel/Makefile
+@@ -39,6 +39,7 @@ obj-$(CONFIG_DRM_PANEL_KHADAS_TS050) += panel-khadas-ts050.o
+ obj-$(CONFIG_DRM_PANEL_KINGDISPLAY_KD097D04) += panel-kingdisplay-kd097d04.o
+ obj-$(CONFIG_DRM_PANEL_LEADTEK_LTK050H3146W) += panel-leadtek-ltk050h3146w.o
+ obj-$(CONFIG_DRM_PANEL_LEADTEK_LTK500HD1829) += panel-leadtek-ltk500hd1829.o
++obj-$(CONFIG_DRM_PANEL_LGD_TD4322) += panel-lgd-td4322.o
+ obj-$(CONFIG_DRM_PANEL_LINCOLNTECH_LCD197) += panel-lincolntech-lcd197.o
+ obj-$(CONFIG_DRM_PANEL_LGPHILIPS_SW43101) += panel-lgphilips-sw43101.o
+ obj-$(CONFIG_DRM_PANEL_LG_LB035Q02) += panel-lg-lb035q02.o
+diff --git a/drivers/gpu/drm/panel/panel-lgd-td4322.c b/drivers/gpu/drm/panel/panel-lgd-td4322.c
+new file mode 100644
+index 0000000..7e478eb
+--- /dev/null
++++ b/drivers/gpu/drm/panel/panel-lgd-td4322.c
+@@ -0,0 +1,303 @@
++// SPDX-License-Identifier: GPL-2.0-only
++/*
++ * DRM panel driver for the LG Display "TD4322" 1080x1920 MIPI-DSI
++ * command-mode panel used in some Xiaomi Mi 5 (gemini, MSM8996) units.
++ *
++ * The init/off sequences and the mode were translated from the downstream
++ * (LineageOS, kernel 4.4, qcom mdss) device tree node
++ * qcom,mdss_dsi_lgd_fhd_td4322_cmd.
++ *
++ * Copyright (c) 2026 Tommaso Sacchetti
++ */
++
++#include <linux/delay.h>
++#include <linux/gpio/consumer.h>
++#include <linux/module.h>
++#include <linux/of.h>
++
++#include <video/mipi_display.h>
++
++#include <drm/drm_mipi_dsi.h>
++#include <drm/drm_modes.h>
++#include <drm/drm_panel.h>
++
++struct lgd_td4322 {
++	struct drm_panel panel;
++	struct mipi_dsi_device *dsi;
++	struct gpio_desc *reset_gpio;
++};
++
++static inline struct lgd_td4322 *to_lgd_td4322(struct drm_panel *panel)
++{
++	return container_of(panel, struct lgd_td4322, panel);
++}
++
++/*
++ * Logical value that asserts the panel reset line.  The GPIO is described as
++ * GPIO_ACTIVE_LOW, so logical 1 drives the line low (reset asserted) and
++ * logical 0 drives it high (reset released).
++ */
++#define LGD_TD4322_RESET_ASSERTED 1
++
++/*
++ * Reset sequence from qcom,mdss-dsi-reset-sequence = <0 1 1 20>.
++ *
++ * The downstream qcom DSI driver applies these values verbatim with
++ * gpio_set_value(), i.e. they are physical line levels applied in order,
++ * and the sequence ends with the line high.  Our reset GPIO is described as
++ * GPIO_ACTIVE_LOW, so a physical high level is the logical value 0:
++ * assert reset (line low) for 1 ms, then release it and give the panel 20 ms
++ * before the first DSI command.  We always finish deasserted; that is the
++ * only property of this sequence that really matters.
++ */
++static void lgd_td4322_reset(struct lgd_td4322 *ctx)
++{
++	gpiod_set_value_cansleep(ctx->reset_gpio, LGD_TD4322_RESET_ASSERTED);
++	usleep_range(1000, 2000);
++	gpiod_set_value_cansleep(ctx->reset_gpio, 0);
++	usleep_range(20000, 21000);
++}
++
++static int lgd_td4322_on(struct lgd_td4322 *ctx)
++{
++	struct mipi_dsi_device *dsi = ctx->dsi;
++	struct mipi_dsi_multi_context dsi_ctx = { .dsi = dsi };
++
++	/* qcom,mdss-dsi-on-command-state = "dsi_lp_mode" */
++	dsi->mode_flags |= MIPI_DSI_MODE_LPM;
++
++	/*
++	 * Faithful transcription of qcom,mdss-dsi-on-command.  Note that the
++	 * vendor table writes the panel up *before* leaving sleep mode; do
++	 * not "fix" the ordering.
++	 */
++
++	/* 15 00 00 00 00 00 02 51 ff - brightness 0x00ff (1 parameter only) */
++	mipi_dsi_dcs_write_seq_multi(&dsi_ctx, MIPI_DCS_SET_DISPLAY_BRIGHTNESS,
++				     0xff);
++	/* 15 00 00 00 00 00 02 53 24 */
++	mipi_dsi_dcs_write_seq_multi(&dsi_ctx, MIPI_DCS_WRITE_CONTROL_DISPLAY,
++				     0x24);
++	/* 15 00 00 00 00 00 02 55 00 */
++	mipi_dsi_dcs_write_seq_multi(&dsi_ctx, MIPI_DCS_WRITE_POWER_SAVE, 0x00);
++	/* 15 00 00 00 00 00 02 35 00 - TE on, V-blank only */
++	mipi_dsi_dcs_set_tear_on_multi(&dsi_ctx, MIPI_DSI_DCS_TEAR_MODE_VBLANK);
++	/*
++	 * 39 01 00 00 00 00 05 30 00 00 02 a7
++	 * 0x30 is not a documented DCS command; this is a vendor long write
++	 * of four bytes, reproduced byte for byte.
++	 */
++	mipi_dsi_dcs_write_seq_multi(&dsi_ctx, 0x30, 0x00, 0x00, 0x02, 0xa7);
++	/* 05 01 00 00 46 00 02 11 00 - exit sleep, wait 0x46 = 70 ms */
++	mipi_dsi_dcs_exit_sleep_mode_multi(&dsi_ctx);
++	mipi_dsi_msleep(&dsi_ctx, 70);
++	/* 05 01 00 00 14 00 02 29 00 - display on, wait 0x14 = 20 ms */
++	mipi_dsi_dcs_set_display_on_multi(&dsi_ctx);
++	mipi_dsi_msleep(&dsi_ctx, 20);
++
++	/* MCAP unlock (0xb0 0x04), manufacturer commands, MCAP lock (0x03) */
++	mipi_dsi_generic_write_seq_multi(&dsi_ctx, 0xb0, 0x04);
++	/* 39 00 00 00 00 00 02 84 00 */
++	mipi_dsi_dcs_write_seq_multi(&dsi_ctx, 0x84, 0x00);
++	mipi_dsi_generic_write_seq_multi(&dsi_ctx, 0xc8, 0x11);
++	mipi_dsi_generic_write_seq_multi(&dsi_ctx, 0xca, 0x1c);
++	mipi_dsi_generic_write_seq_multi(&dsi_ctx, 0xea, 0x0f);
++	mipi_dsi_generic_write_seq_multi(&dsi_ctx, 0xb0, 0x03);
++
++	return dsi_ctx.accum_err;
++}
++
++/*
++ * Off sequence from qcom,mdss-dsi-off-command:
++ *   05 01 00 00 14 00 02 28 00  - display off, wait 20 ms
++ *   05 01 00 00 78 00 02 10 00  - enter sleep, wait 0x78 = 120 ms
++ * and qcom,mdss-dsi-off-command-state = "dsi_hs_mode".
++ */
++static void lgd_td4322_off(struct lgd_td4322 *ctx)
++{
++	struct mipi_dsi_device *dsi = ctx->dsi;
++	struct mipi_dsi_multi_context dsi_ctx = { .dsi = dsi };
++
++	dsi->mode_flags &= ~MIPI_DSI_MODE_LPM;
++
++	mipi_dsi_dcs_set_display_off_multi(&dsi_ctx);
++	mipi_dsi_msleep(&dsi_ctx, 20);
++	mipi_dsi_dcs_enter_sleep_mode_multi(&dsi_ctx);
++	mipi_dsi_msleep(&dsi_ctx, 120);
++}
++
++static int lgd_td4322_prepare(struct drm_panel *panel)
++{
++	struct lgd_td4322 *ctx = to_lgd_td4322(panel);
++	int ret;
++
++	lgd_td4322_reset(ctx);
++
++	ret = lgd_td4322_on(ctx);
++	if (ret < 0)
++		gpiod_set_value_cansleep(ctx->reset_gpio,
++					 LGD_TD4322_RESET_ASSERTED);
++
++	return ret;
++}
++
++static int lgd_td4322_unprepare(struct drm_panel *panel)
++{
++	struct lgd_td4322 *ctx = to_lgd_td4322(panel);
++
++	/*
++	 * NOTE: we do not return an error here.  Even if the panel did not
++	 * shut down cleanly, resetting it leaves it in a state we can power
++	 * up from again later.
++	 */
++	lgd_td4322_off(ctx);
++
++	gpiod_set_value_cansleep(ctx->reset_gpio, LGD_TD4322_RESET_ASSERTED);
++
++	return 0;
++}
++
++/*
++ * Mode from the downstream node:
++ *   hdisplay 0x438 = 1080, vdisplay 0x780 = 1920, 0x3c = 60 Hz
++ *   hfp 0x78 = 120, hsync 0x10 = 16, hbp 0x28 = 40
++ *   vfp 0x04 = 4,   vsync 0x02 = 2,  vbp 0x04 = 4
++ *   physical size 0x40 x 0x72 = 64 x 114 mm
++ *
++ * A command-mode panel has no pixel stream on the DSI link, but the DSI
++ * host/PHY still derive their bit clock from mode->clock, so use the usual
++ * htotal * vtotal * fps / 1000 formula (same as the sibling JDI R63452
++ * driver on this board, whose downstream porches are identical):
++ *
++ *   1256 * 1930 * 60 / 1000 = 145384 kHz   (the true value is 145384.8)
++ *
++ * At 24 bpp over 4 lanes that is ~872.3 Mbit/s per lane.  The 0.8 kHz
++ * truncation is below one part in 1e5 and does not change drm_mode_vrefresh()
++ * (it still reports 60).
++ */
++static const struct drm_display_mode lgd_td4322_mode = {
++	.clock = (1080 + 120 + 16 + 40) * (1920 + 4 + 2 + 4) * 60 / 1000,
++	.hdisplay = 1080,
++	.hsync_start = 1080 + 120,
++	.hsync_end = 1080 + 120 + 16,
++	.htotal = 1080 + 120 + 16 + 40,
++	.vdisplay = 1920,
++	.vsync_start = 1920 + 4,
++	.vsync_end = 1920 + 4 + 2,
++	.vtotal = 1920 + 4 + 2 + 4,
++	.width_mm = 64,
++	.height_mm = 114,
++};
++
++static int lgd_td4322_get_modes(struct drm_panel *panel,
++				struct drm_connector *connector)
++{
++	struct drm_display_mode *mode;
++
++	mode = drm_mode_duplicate(connector->dev, &lgd_td4322_mode);
++	if (!mode)
++		return -ENOMEM;
++
++	drm_mode_set_name(mode);
++
++	mode->type = DRM_MODE_TYPE_DRIVER | DRM_MODE_TYPE_PREFERRED;
++	connector->display_info.width_mm = mode->width_mm;
++	connector->display_info.height_mm = mode->height_mm;
++	drm_mode_probed_add(connector, mode);
++
++	return 1;
++}
++
++static const struct drm_panel_funcs lgd_td4322_panel_funcs = {
++	.prepare = lgd_td4322_prepare,
++	.unprepare = lgd_td4322_unprepare,
++	.get_modes = lgd_td4322_get_modes,
++};
++
++static int lgd_td4322_probe(struct mipi_dsi_device *dsi)
++{
++	struct device *dev = &dsi->dev;
++	struct lgd_td4322 *ctx;
++	int ret;
++
++	ctx = devm_drm_panel_alloc(dev, struct lgd_td4322, panel,
++				   &lgd_td4322_panel_funcs,
++				   DRM_MODE_CONNECTOR_DSI);
++	if (IS_ERR(ctx))
++		return PTR_ERR(ctx);
++
++	ctx->reset_gpio = devm_gpiod_get(dev, "reset", GPIOD_OUT_HIGH);
++	if (IS_ERR(ctx->reset_gpio))
++		return dev_err_probe(dev, PTR_ERR(ctx->reset_gpio),
++				     "Failed to get reset-gpios\n");
++
++	ctx->dsi = dsi;
++	mipi_dsi_set_drvdata(dsi, ctx);
++
++	dsi->lanes = 4;
++	dsi->format = MIPI_DSI_FMT_RGB888;
++
++	/*
++	 * Command mode: no MIPI_DSI_MODE_VIDEO* bits.  Downstream enables
++	 * qcom,ulps-enabled and qcom,panel-allow-phy-poweroff, so the clock
++	 * lane may be stopped between transfers.  Commands are sent in LP
++	 * mode (see lgd_td4322_on()) and the vendor table asks for EOT
++	 * packets (qcom,mdss-dsi-tx-eot-append), hence no
++	 * MIPI_DSI_MODE_NO_EOT_PACKET.
++	 */
++	dsi->mode_flags = MIPI_DSI_CLOCK_NON_CONTINUOUS;
++
++	/*
++	 * Ask for the DSI host to be brought up first, so that the link is in
++	 * LP-11 before the panel is powered and initialised (see the
++	 * prepare_prev_first documentation).  Same as the JDI driver.
++	 */
++	ctx->panel.prepare_prev_first = true;
++
++	ret = drm_panel_of_backlight(&ctx->panel);
++	if (ret)
++		return dev_err_probe(dev, ret, "Failed to get backlight\n");
++
++	drm_panel_add(&ctx->panel);
++
++	ret = mipi_dsi_attach(dsi);
++	if (ret < 0) {
++		dev_err(dev, "Failed to attach to DSI host: %d\n", ret);
++		drm_panel_remove(&ctx->panel);
++		return ret;
++	}
++
++	return 0;
++}
++
++static void lgd_td4322_remove(struct mipi_dsi_device *dsi)
++{
++	struct lgd_td4322 *ctx = mipi_dsi_get_drvdata(dsi);
++	int ret;
++
++	ret = mipi_dsi_detach(dsi);
++	if (ret < 0)
++		dev_err(&dsi->dev, "Failed to detach from DSI host: %d\n", ret);
++
++	drm_panel_remove(&ctx->panel);
++}
++
++static const struct of_device_id lgd_td4322_of_match[] = {
++	{ .compatible = "lgd,td4322" },
++	{ /* sentinel */ }
++};
++MODULE_DEVICE_TABLE(of, lgd_td4322_of_match);
++
++static struct mipi_dsi_driver lgd_td4322_driver = {
++	.probe = lgd_td4322_probe,
++	.remove = lgd_td4322_remove,
++	.driver = {
++		.name = "panel-lgd-td4322",
++		.of_match_table = lgd_td4322_of_match,
++	},
++};
++module_mipi_dsi_driver(lgd_td4322_driver);
++
++MODULE_AUTHOR("Tommaso Sacchetti");
++MODULE_DESCRIPTION("DRM driver for the LGD TD4322 FHD DSI panel, command mode");
++MODULE_LICENSE("GPL");

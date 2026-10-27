@@ -1,0 +1,50 @@
+From 41667338bac4852c07918d8314663b1a5758d787 Mon Sep 17 00:00:00 2001
+From: Tommaso Sacchetti <noreply@example.invalid>
+Date: Tue, 27 Oct 2026 15:36:38 +0100
+Subject: [PATCH] arm64: dts: msm8996-xiaomi-gemini: enable the USB PHY
+ reference clock early
+
+The QUSB2 PHY on msm8996 uses the single-ended reference clock scheme, so
+the driver never enables its "ref" clock. The reference really comes from
+the RPM LN_BB clock behind gcc_rx1_usb2_clkref_clk, which stays off until
+another consumer (UFS) requests it. If USB probes before that, the PLL
+lock check fails ("QUSB2PHY pll lock failed") and dwc3 never gets a UDC.
+
+List the gate a second time as the optional "iface" clock, which the
+driver enables before the PLL check, as the downstream tree does.
+
+Seen on a Xiaomi Mi 5: without this the USB gadget did not come up
+reliably.
+
+Signed-off-by: Tommaso Sacchetti
+---
+ .../boot/dts/qcom/msm8996-xiaomi-gemini.dts      | 16 ++++++++++++++++
+ 1 file changed, 16 insertions(+)
+
+diff --git a/arch/arm64/boot/dts/qcom/msm8996-xiaomi-gemini.dts b/arch/arm64/boot/dts/qcom/msm8996-xiaomi-gemini.dts
+index c22129e..0236b60 100644
+--- a/arch/arm64/boot/dts/qcom/msm8996-xiaomi-gemini.dts
++++ b/arch/arm64/boot/dts/qcom/msm8996-xiaomi-gemini.dts
+@@ -126,6 +126,22 @@
+ 	remote-endpoint = <&panel_in>;
+ };
+ 
++&hsusb_phy1 {
++	/*
++	 * The QUSB2 PHY runs with the single-ended reference clock scheme on
++	 * msm8996, so the driver never enables its "ref" clock. The reference
++	 * actually comes from the RPM LN_BB clock behind gcc_rx1_usb2_clkref_clk,
++	 * which stays off until some other driver (UFS) requests it, and the PLL
++	 * lock check fails if USB is probed first. Also list the gate as the
++	 * optional "iface" clock; the driver enables that one before the PLL
++	 * check, like the downstream tree does.
++	 */
++	clocks = <&gcc GCC_USB_PHY_CFG_AHB2PHY_CLK>,
++		 <&gcc GCC_RX1_USB2_CLKREF_CLK>,
++		 <&gcc GCC_RX1_USB2_CLKREF_CLK>;
++	clock-names = "cfg_ahb", "ref", "iface";
++};
++
+ &pmi8994_wled {
+ 	status = "okay";
+ };

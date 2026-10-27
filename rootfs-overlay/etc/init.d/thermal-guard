@@ -1,0 +1,5 @@
+#!/sbin/openrc-run
+description="Power off cleanly on over-temperature"
+command=/usr/local/bin/thermal-guard.sh
+command_background=true
+pidfile=/run/thermal-guard.pid

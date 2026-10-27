@@ -1,0 +1,8 @@
+# auto   - normal charging
+# bypass - stop charging while USB power is present (phone runs from the cable)
+# limit  - keep the battery between LIMIT_LOW and LIMIT_HIGH percent
+MODE=auto
+LIMIT_LOW=70
+LIMIT_HIGH=80
+# bypass safety floor: charge again below FLOOR until FLOOR+10 is reached
+FLOOR=20

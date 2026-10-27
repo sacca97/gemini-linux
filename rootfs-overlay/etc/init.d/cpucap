@@ -1,0 +1,8 @@
+#!/sbin/openrc-run
+description="Cap the big CPU cluster frequency"
+start() {
+	. /etc/conf.d/cpucap
+	[ -n "$BIG_MAX" ] || return 0
+	for c in 2 3; do echo "$BIG_MAX" > /sys/devices/system/cpu/cpu$c/cpufreq/scaling_max_freq; done
+}
+stop() { return 0; }
